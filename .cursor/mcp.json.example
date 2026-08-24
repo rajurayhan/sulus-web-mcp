@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "sulus-web": {
+      "command": "node",
+      "args": ["dist/index.js"],
+      "cwd": "/Users/macbook/Workshop/Sulus.ai/sulus-web-mcp"
+    }
+  }
+}

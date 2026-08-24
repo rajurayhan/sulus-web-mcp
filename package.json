@@ -1,0 +1,35 @@
+{
+  "name": "sulus-web-mcp",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Stateless Playwright MCP for live-web research (browse, extract, search)",
+  "bin": {
+    "sulus-web-mcp": "./dist/index.js",
+    "sulus-web-mcp-http": "./dist/http-server.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "start:http": "node dist/http-server.js",
+    "dev": "node --import tsx src/index.ts",
+    "dev:http": "node --import tsx src/http-server.ts",
+    "test": "node --import tsx --test src/**/*.test.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "dotenv": "^16.4.5",
+    "express": "^5.2.1",
+    "playwright": "1.62.1"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.0",
+    "@types/node": "^22.10.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.7.0"
+  }
+}
