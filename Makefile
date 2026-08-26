@@ -1,4 +1,4 @@
-.PHONY: install build test typecheck http docker-up docker-down
+.PHONY: install build test typecheck http docker-up docker-down deploy restart
 
 install:
 	npm install
@@ -21,3 +21,9 @@ docker-up:
 
 docker-down:
 	docker compose down
+
+deploy:
+	bash deploy/vps/deploy.sh
+
+restart:
+	bash deploy/vps/restart-services.sh
