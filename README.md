@@ -54,25 +54,16 @@ MCP: `POST /mcp` (JSON-RPC, Streamable HTTP)
 
 Logs are one JSON line per browse (`url` origin+path, status, ms). Page bodies are never logged.
 
-### Docker (local)
+### Production (`browse.sulus.ai`, same droplet as MiniERP)
 
-```bash
-cp .env.example .env
-docker compose up -d --build
-```
-
-Uses the official Playwright image (Chromium included). `shm_size: 1gb` is required.
-
-### Production VPS (`browse.sulus.ai`)
-
-Docker Compose on loopback + nginx + TLS. Full runbook, nginx vhost, and deploy script:
+Native Node + systemd + nginx — **no Docker**. Runbook, unit file, nginx, and `./deploy.sh`:
 
 **[docs/DEPLOY.md](docs/DEPLOY.md)**
 
 ```bash
-# On the VPS, as deploy:
-cp deploy/vps/env.production.example .env   # set MCP_SHARED_SECRET
-bash deploy/vps/deploy.sh
+# On the droplet, as deploy:
+cp deploy/vps/env.production.example .env.production   # set MCP_SHARED_SECRET
+./deploy.sh
 ```
 
 ### stdio (local Cursor)

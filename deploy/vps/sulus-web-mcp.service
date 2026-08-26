@@ -1,0 +1,21 @@
+[Unit]
+Description=sulus-web-mcp (Playwright HTTP MCP)
+After=network.target
+
+[Service]
+Type=simple
+User=deploy
+Group=deploy
+WorkingDirectory=/var/www/sulus-web-mcp
+EnvironmentFile=/var/www/sulus-web-mcp/.env.production
+Environment=NODE_ENV=production
+Environment=PLAYWRIGHT_BROWSERS_PATH=/var/www/sulus-web-mcp/.playwright
+ExecStart=/usr/bin/node dist/http-server.js
+Restart=on-failure
+RestartSec=5
+# Chromium needs a usable /dev/shm; do not add RestrictSUIDSGID / NoNewPrivileges
+# sandbox flags that break headless launch. PrivateTmp is fine.
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

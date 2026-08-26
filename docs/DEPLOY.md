@@ -1,35 +1,27 @@
-# sulus-web-mcp VPS deployment (`browse.sulus.ai`)
+# sulus-web-mcp deployment (`browse.sulus.ai`)
 
-Docker Compose + nginx on the same Ubuntu VPS as MCPConnect (`mcp.sulus.ai` / `connect.sulus.ai`) and SulusPin (`pins.sulus.ai`). Chromium ships in the official Playwright image — do not run headless Chrome on the host.
+Manual **Node.js + systemd + nginx** on the **same DigitalOcean droplet as MiniERP**. No Docker.
 
-| Host | Upstream | Role |
-| --- | --- | --- |
-| `mcp.sulus.ai` | `127.0.0.1:3000` | MCPConnect dashboard (existing) |
-| `connect.sulus.ai` | `127.0.0.1:8790` | MCP plane (existing) |
-| `pins.sulus.ai` | `127.0.0.1:7300` | SulusPin (existing) |
-| `browse.sulus.ai` | `127.0.0.1:3100` | **sulus-web-mcp** (this service) |
+| Host | Upstream | systemd | App dir |
+| --- | --- | --- | --- |
+| `erp.sulus.ai` | `127.0.0.1:3010` | `minierp.service` | `/var/www/minierp` |
+| `browse.sulus.ai` | `127.0.0.1:3100` | `sulus-web-mcp.service` | `/var/www/sulus-web-mcp` |
 
 Public URL: `https://browse.sulus.ai/mcp`  
 Health: `https://browse.sulus.ai/health` (no bearer)
 
-Templates live under [`deploy/vps/`](../deploy/vps/).
+Templates: [`deploy/vps/`](../deploy/vps/). Day-2 updates: [`./deploy.sh`](../deploy.sh) (same pattern as MiniERP).
 
 ---
 
 ## Prerequisites
 
-- Ubuntu VPS with **Docker Engine + Compose plugin**, **nginx**, and **certbot**
-- Linux user that owns the app (examples use `deploy`) and is in the `docker` group
-- DNS **A/AAAA** for `browse.sulus.ai` → this server
-- At least **2 GB RAM** free for Chromium (`shm_size: 1gb` is required)
+- The MiniERP droplet (Ubuntu, nginx, certbot, `deploy` user, Node 20+)
+- DNS **A/AAAA** for `browse.sulus.ai` → that droplet
+- ~2 GB RAM free for Chromium
+- Playwright OS libs once: `sudo npx playwright install-deps chromium`
 
-```bash
-# Docker access for deploy (once)
-sudo usermod -aG docker deploy
-# re-login as deploy after this
-```
-
-Do **not** publish port 3100 on the public interface. The prod overlay binds `127.0.0.1` only; nginx terminates TLS.
+Do **not** open port **3100** publicly. systemd binds `127.0.0.1`. nginx terminates TLS.
 
 ---
 
@@ -52,53 +44,81 @@ git clone https://github.com/rajurayhan/sulus-web-mcp.git .
 
 ---
 
-## 2. Production env
+## 2. Playwright OS dependencies (once)
+
+As root, on the droplet (installs Chromium system libraries, not the browser itself):
+
+```bash
+cd /var/www/sulus-web-mcp
+sudo npx playwright install-deps chromium
+```
+
+`deploy.sh` then installs the browser binary as `deploy` into `.playwright/`.
+
+---
+
+## 3. Production env
 
 ```bash
 sudo -iu deploy bash -lc '
   cd /var/www/sulus-web-mcp
-  cp deploy/vps/env.production.example .env
-  # edit .env — set MCP_SHARED_SECRET (openssl rand -hex 32)
+  cp deploy/vps/env.production.example .env.production
+  chmod 600 .env.production
 '
+```
+
+Set `MCP_SHARED_SECRET`:
+
+```bash
+openssl rand -hex 32
+# paste into .env.production
 ```
 
 | Variable | Production value |
 | --- | --- |
-| `MCP_SHARED_SECRET` | Long random secret. Required. Clients send `Authorization: Bearer <secret>` |
-| `MCP_PORT` | **Host** port, default `3100` (container still listens on `3000`) |
+| `MCP_SHARED_SECRET` | Long random secret. Clients send `Authorization: Bearer <secret>` |
+| `MCP_HOST` | `127.0.0.1` |
+| `MCP_PORT` | `3100` (MiniERP uses `3010`) |
 | `MCP_ALLOWED_HOSTS` | `browse.sulus.ai` |
 | `ALLOW_INSECURE_HTTP` | `false` |
-| `NAVIGATION_TIMEOUT_MS` / `TOOL_TIMEOUT_MS` | Keep under Agents' 60s `tools/call` timeout |
 
-Never commit `.env`. `deploy.sh` refuses to start if the secret is missing or still a placeholder.
+`deploy.sh` refuses to start if the secret is missing or still a placeholder.
 
 ---
 
-## 3. First start
+## 4. systemd
 
 ```bash
-sudo -iu deploy bash /var/www/sulus-web-mcp/deploy/vps/deploy.sh
+sudo cp /var/www/sulus-web-mcp/deploy/vps/sulus-web-mcp.service \
+  /etc/systemd/system/sulus-web-mcp.service
+sudo systemctl daemon-reload
+sudo systemctl enable sulus-web-mcp
 ```
 
-That pulls, builds the Playwright image, starts the container, and waits for `GET /health`.
-
-Loopback smoke test:
+If `node` is not `/usr/bin/node`:
 
 ```bash
+sudo -iu deploy bash -lc 'which node'
+# edit ExecStart= in the unit, then daemon-reload
+```
+
+First build + start:
+
+```bash
+sudo -iu deploy bash /var/www/sulus-web-mcp/deploy.sh
+sudo systemctl status sulus-web-mcp --no-pager
 curl -fsS http://127.0.0.1:3100/health
-# {"status":"ok","service":"sulus-web-mcp"}
 ```
 
 Logs:
 
 ```bash
-cd /var/www/sulus-web-mcp
-docker compose -f compose.yaml -f deploy/vps/compose.prod.yaml logs -f web-mcp
+journalctl -u sulus-web-mcp -f
 ```
 
 ---
 
-## 4. nginx
+## 5. nginx
 
 ```bash
 sudo cp /var/www/sulus-web-mcp/deploy/vps/nginx-browse.sulus.ai.conf \
@@ -108,11 +128,11 @@ sudo nginx -t && sudo systemctl reload nginx
 curl -fsS http://browse.sulus.ai/health
 ```
 
-`/mcp` is proxied with buffering off and a 90s read timeout (browse + extract can take ~45s). Everything else returns 404.
+`/mcp` is proxied with buffering off and a 90s read timeout. Everything else returns 404.
 
 ---
 
-## 5. TLS
+## 6. TLS
 
 ```bash
 sudo certbot --nginx -d browse.sulus.ai
@@ -120,11 +140,9 @@ sudo nginx -t && sudo systemctl reload nginx
 curl -fsS https://browse.sulus.ai/health
 ```
 
-If certbot does not rewrite the vhost, uncomment the HTTPS block in `deploy/vps/nginx-browse.sulus.ai.conf` and turn port 80 into a redirect.
-
 ---
 
-## 6. Connect clients
+## 7. Connect clients
 
 ### ai-phone-system Agents
 
@@ -132,8 +150,6 @@ If certbot does not rewrite the vhost, uncomment the HTTPS block in `deploy/vps/
 2. URL: `https://browse.sulus.ai/mcp`
 3. Auth: Bearer, token = `MCP_SHARED_SECRET`
 4. Enable the connector on the agent
-
-The HTTP handler answers `tools/list` and `tools/call` without `initialize` / `Mcp-Session-Id`.
 
 ### Cursor (HTTP)
 
@@ -150,61 +166,52 @@ The HTTP handler answers `tools/list` and `tools/call` without `initialize` / `M
 }
 ```
 
-### MCPConnect
-
-Same URL + bearer token as a custom HTTPS MCP server. Do not put the secret in logs or the browser.
-
 Tools: `browse_page`, `extract_links`, `search_page`.
 
 ---
 
-## 7. Updates
+## 8. Updates
 
-Same two-step pattern as MCPConnect / SulusPin:
+Same as MiniERP (`./deploy.sh` on the droplet):
 
 ```bash
-# As deploy — pull + rebuild image
-sudo -iu deploy bash /var/www/sulus-web-mcp/deploy/vps/deploy.sh
+cd /var/www/sulus-web-mcp
+./deploy.sh
+```
 
-# Restart only (no rebuild)
+That fetches `main`, `npm ci`, installs Chromium if needed, builds, restarts `sulus-web-mcp`, and checks `/health`.
+
+| Flag | Effect |
+| --- | --- |
+| `--no-pull` | Skip `git fetch` / `reset` |
+| `--no-restart` | Build only |
+| `--no-playwright` | Skip Chromium install |
+| `--no-health-check` | Skip curl |
+
+Restart only:
+
+```bash
 sudo bash /var/www/sulus-web-mcp/deploy/vps/restart-services.sh
 ```
 
-| Var | Effect |
-| --- | --- |
-| `SKIP_PULL=1` | Skip `git pull` |
-| `SKIP_BUILD=1` | Recreate from the current image (no `--build`) |
+---
 
-```bash
-sudo -iu deploy env SKIP_PULL=1 bash /var/www/sulus-web-mcp/deploy/vps/deploy.sh
-```
+## 9. Firewall
 
-Ensure Docker starts on boot so `restart: unless-stopped` brings the container back:
-
-```bash
-sudo systemctl enable --now docker
-```
+- Do **not** open port **3100** (or MiniERP **3010**) publicly.
+- Public traffic only via nginx on 80/443.
 
 ---
 
-## 8. Firewall
-
-- Do **not** open port **3100** publicly. Compose binds `127.0.0.1`.
-- Public traffic only via nginx on 80/443 for `browse.sulus.ai`.
-
----
-
-## 9. Server config reference
+## Server config reference
 
 | File | Purpose |
 | --- | --- |
-| [`deploy/vps/env.production.example`](../deploy/vps/env.production.example) | Production `.env` template |
-| [`deploy/vps/compose.prod.yaml`](../deploy/vps/compose.prod.yaml) | Loopback publish on host `:3100` |
-| [`deploy/vps/nginx-browse.sulus.ai.conf`](../deploy/vps/nginx-browse.sulus.ai.conf) | TLS-ready nginx vhost |
-| [`deploy/vps/deploy.sh`](../deploy/vps/deploy.sh) | Pull, build, start, health-check |
-| [`deploy/vps/restart-services.sh`](../deploy/vps/restart-services.sh) | Restart container + health-check |
-| [`compose.yaml`](../compose.yaml) | Base image, `shm_size`, in-container `:3000` |
-| [`Dockerfile`](../Dockerfile) | Playwright `v1.62.1-noble` + `node dist/http-server.js` |
+| [`deploy/vps/env.production.example`](../deploy/vps/env.production.example) | `.env.production` template |
+| [`deploy/vps/sulus-web-mcp.service`](../deploy/vps/sulus-web-mcp.service) | systemd unit |
+| [`deploy/vps/nginx-browse.sulus.ai.conf`](../deploy/vps/nginx-browse.sulus.ai.conf) | nginx vhost |
+| [`deploy.sh`](../deploy.sh) | Pull, install, build, restart, health-check |
+| [`deploy/vps/restart-services.sh`](../deploy/vps/restart-services.sh) | Restart unit + health-check |
 
 ---
 
@@ -212,12 +219,13 @@ sudo systemctl enable --now docker
 
 | Symptom | Check |
 | --- | --- |
-| Health fails after deploy | `docker compose -f compose.yaml -f deploy/vps/compose.prod.yaml logs --tail 80 web-mcp` |
-| `401` on `/mcp` | Bearer token must match `MCP_SHARED_SECRET` exactly |
+| Health fails after deploy | `journalctl -u sulus-web-mcp -n 80 --no-pager` |
+| `401` on `/mcp` | Bearer token must match `MCP_SHARED_SECRET` |
 | `Host not allowed` | Add the public hostname to `MCP_ALLOWED_HOSTS` |
-| Browser launch / crash | Confirm `shm_size: 1gb`; add RAM or lower `BROWSER_MAX_CONCURRENT` |
+| Chromium launch / missing libs | Re-run `sudo npx playwright install-deps chromium` |
+| Browser crash / SIGBUS | Check `/dev/shm` (`df -h /dev/shm`); lower `BROWSER_MAX_CONCURRENT` |
 | Agent tool timeout | Keep `TOOL_TIMEOUT_MS` ≤ 45000; nginx `proxy_read_timeout` is 90s |
-| Port already in use | Another service on `3100` — change `MCP_PORT` in `.env` **and** the nginx `upstream` |
-| Container not after reboot | `sudo systemctl enable docker` |
+| Port already in use | `sudo ss -tlnp \| grep 3100` — change `MCP_PORT` **and** nginx `upstream` |
+| `node` not found in systemd | Set `ExecStart=` to `which node` for `deploy` |
 
-Local (non-VPS) run remains `npm run start:http` or `docker compose up` — see [README.md](../README.md).
+Local run remains `npm run start:http` — see [README.md](../README.md).

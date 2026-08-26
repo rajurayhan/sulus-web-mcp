@@ -1,14 +1,11 @@
 #!/usr/bin/env bash
-# sulus-web-mcp — VPS deploy: git pull, Docker rebuild, health check.
-# Run as the Unix user that owns the repo and can talk to Docker (usually `deploy`).
+# sulus-web-mcp — manual production deploy (native Node + systemd).
+# Same droplet as MiniERP. No Docker.
+# Run on the server from the app directory, e.g. /var/www/sulus-web-mcp:
+#   ./deploy.sh
+#   # or: bash deploy/vps/deploy.sh
+#
 # See docs/DEPLOY.md.
-#
-#   bash deploy/vps/deploy.sh
-#
-# Environment (optional):
-#   SKIP_PULL=1     — already at the desired SHA
-#   SKIP_BUILD=1    — restart existing image only (no rebuild)
-#   APP_ROOT=…      — override checkout path (default: this repo)
 
 set -euo pipefail
 
@@ -16,56 +13,135 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 ROOT="${APP_ROOT:-$ROOT}"
 cd "${ROOT}"
 
-COMPOSE=(docker compose -f compose.yaml -f deploy/vps/compose.prod.yaml)
+ENV_FILE="${ENV_FILE:-.env.production}"
+GIT_BRANCH="${GIT_BRANCH:-main}"
+SYSTEMD_SERVICE="${SYSTEMD_SERVICE:-sulus-web-mcp}"
 SKIP_PULL="${SKIP_PULL:-0}"
-SKIP_BUILD="${SKIP_BUILD:-0}"
+SKIP_RESTART="${SKIP_RESTART:-0}"
+SKIP_HEALTH_CHECK="${SKIP_HEALTH_CHECK:-0}"
+SKIP_PLAYWRIGHT="${SKIP_PLAYWRIGHT:-0}"
 
-if [[ ! -f "${ROOT}/.env" ]]; then
-  printf 'error: missing .env — copy deploy/vps/env.production.example and fill secrets\n' >&2
-  printf '  cp deploy/vps/env.production.example .env\n' >&2
-  exit 1
-fi
+usage() {
+  cat <<EOF
+Usage: ./deploy.sh [options]
 
-secret="$(awk -F= '/^MCP_SHARED_SECRET=/{print $2; exit}' .env | tr -d '[:space:]' | tr -d '"' | tr -d "'")"
-if [[ -z "${secret}" || "${secret}" == "generate-a-long-random-secret" || "${secret}" == "replace-with-a-long-random-secret" ]]; then
-  printf 'error: set MCP_SHARED_SECRET in .env to a long random value before deploying\n' >&2
-  exit 1
-fi
+Options:
+  --no-pull          Skip git fetch/reset
+  --no-restart       Build only; do not restart systemd
+  --no-health-check  Skip post-deploy curl check
+  --no-playwright    Skip Playwright Chromium install
+  -h, --help         Show this help
 
-if ! command -v docker >/dev/null 2>&1; then
-  printf 'error: docker not found. Install Docker Engine + Compose plugin, then retry.\n' >&2
-  exit 1
-fi
+Environment:
+  ENV_FILE           Env file (default: .env.production)
+  GIT_BRANCH         Branch to deploy (default: main)
+  SYSTEMD_SERVICE    systemd unit name (default: sulus-web-mcp)
+  SKIP_PULL=1        Same as --no-pull
+  SKIP_RESTART=1     Same as --no-restart
+  SKIP_HEALTH_CHECK=1 Same as --no-health-check
+  SKIP_PLAYWRIGHT=1  Same as --no-playwright
+EOF
+}
 
-if [[ "${SKIP_PULL}" != "1" && -d "${ROOT}/.git" ]]; then
-  git pull --ff-only
-fi
-
-if [[ "${SKIP_BUILD}" == "1" ]]; then
-  "${COMPOSE[@]}" up -d
-else
-  "${COMPOSE[@]}" up -d --build
-fi
-
-host_port="$(awk -F= '/^MCP_PORT=/{print $2; exit}' .env | tr -d '[:space:]' | tr -d '"' | tr -d "'")"
-host_port="${host_port:-3100}"
-
-printf '\nWaiting for health on 127.0.0.1:%s …\n' "${host_port}"
-ok=0
-for _ in 1 2 3 4 5 6 7 8 9 10; do
-  if curl -fsS --max-time 5 "http://127.0.0.1:${host_port}/health" >/dev/null 2>&1; then
-    ok=1
-    break
-  fi
-  sleep 2
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --no-pull)
+      SKIP_PULL=1
+      shift
+      ;;
+    --no-restart)
+      SKIP_RESTART=1
+      shift
+      ;;
+    --no-health-check)
+      SKIP_HEALTH_CHECK=1
+      shift
+      ;;
+    --no-playwright)
+      SKIP_PLAYWRIGHT=1
+      shift
+      ;;
+    -h | --help)
+      usage
+      exit 0
+      ;;
+    *)
+      echo "Unknown option: $1" >&2
+      usage >&2
+      exit 1
+      ;;
+  esac
 done
 
-if [[ "${ok}" -ne 1 ]]; then
-  printf 'error: health check failed. Logs:\n' >&2
-  "${COMPOSE[@]}" logs --tail 80 web-mcp >&2 || true
+if [[ ! -f "${ROOT}/${ENV_FILE}" ]]; then
+  printf 'error: missing %s — copy deploy/vps/env.production.example and fill MCP_SHARED_SECRET\n' "${ENV_FILE}" >&2
+  printf '  cp deploy/vps/env.production.example %s\n' "${ENV_FILE}" >&2
   exit 1
 fi
 
-printf 'OK — sulus-web-mcp is up on 127.0.0.1:%s\n' "${host_port}"
+secret="$(awk -F= '/^MCP_SHARED_SECRET=/{print $2; exit}' "${ENV_FILE}" | tr -d '[:space:]' | tr -d '"' | tr -d "'")"
+if [[ -z "${secret}" || "${secret}" == "generate-a-long-random-secret" || "${secret}" == "replace-with-a-long-random-secret" ]]; then
+  printf 'error: set MCP_SHARED_SECRET in %s to a long random value before deploying\n' "${ENV_FILE}" >&2
+  exit 1
+fi
+
+if ! command -v node >/dev/null 2>&1; then
+  printf 'error: node not found (need Node.js 20+)\n' >&2
+  exit 1
+fi
+
+echo "==> Deploying sulus-web-mcp from ${ROOT} (branch: ${GIT_BRANCH})"
+
+if [[ "${SKIP_PULL}" != "1" && -d "${ROOT}/.git" ]]; then
+  echo "==> git fetch origin ${GIT_BRANCH}"
+  git fetch origin "${GIT_BRANCH}"
+  git reset --hard "origin/${GIT_BRANCH}"
+fi
+
+echo "==> npm ci"
+npm ci
+
+if [[ "${SKIP_PLAYWRIGHT}" != "1" ]]; then
+  echo "==> playwright install chromium"
+  mkdir -p .playwright
+  export PLAYWRIGHT_BROWSERS_PATH="${PLAYWRIGHT_BROWSERS_PATH:-${ROOT}/.playwright}"
+  npx playwright install chromium
+else
+  echo "==> skipping Playwright install (--no-playwright)"
+fi
+
+echo "==> npm run build"
+npm run build
+
+host_port="$(awk -F= '/^MCP_PORT=/{print $2; exit}' "${ENV_FILE}" | tr -d '[:space:]' | tr -d '"' | tr -d "'")"
+host_port="${host_port:-3100}"
+
+if [[ "${SKIP_RESTART}" != "1" ]]; then
+  echo "==> sudo systemctl restart ${SYSTEMD_SERVICE}"
+  sudo systemctl restart "${SYSTEMD_SERVICE}"
+else
+  echo "==> skipping systemd restart (--no-restart)"
+fi
+
+if [[ "${SKIP_HEALTH_CHECK}" != "1" && "${SKIP_RESTART}" != "1" ]]; then
+  echo "==> health check http://127.0.0.1:${host_port}/health"
+  ok=0
+  for _ in 1 2 3 4 5 6 7 8 9 10; do
+    if curl -fsS --max-time 5 "http://127.0.0.1:${host_port}/health" >/dev/null 2>&1; then
+      ok=1
+      break
+    fi
+    sleep 2
+  done
+  if [[ "${ok}" -ne 1 ]]; then
+    printf 'error: health check failed\n' >&2
+    sudo journalctl -u "${SYSTEMD_SERVICE}" -n 50 --no-pager || true
+    exit 1
+  fi
+  echo "Deploy OK — http://127.0.0.1:${host_port}/health"
+else
+  echo "Deploy build finished."
+fi
+
 printf 'Public MCP (after nginx + TLS): https://browse.sulus.ai/mcp\n'
 printf 'Restart only: sudo bash %s/deploy/vps/restart-services.sh\n' "${ROOT}"
