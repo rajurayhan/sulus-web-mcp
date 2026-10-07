@@ -5,6 +5,7 @@ import {
   formatBrowseResult,
   sameOrigin,
   truncate,
+  truncateKeepingPreface,
 } from "./extract.js";
 
 describe("truncate", () => {
@@ -62,5 +63,14 @@ describe("formatBrowseResult", () => {
   it("formats links extract", () => {
     const text = formatBrowseResult(page, "links", 10_000);
     assert.match(text, /A: https:\/\/example.com\/a/);
+  });
+
+  it("keeps images when the body is trimmed", () => {
+    const text = truncateKeepingPreface(
+      `title: T\n\n## Images\n\n- https://cdn.example.com/a.jpg\n\n## Page text\n\n${"word ".repeat(2000)}`,
+      400,
+    );
+    assert.match(text, /https:\/\/cdn\.example\.com\/a\.jpg/);
+    assert.match(text, /\[truncated\]/);
   });
 });

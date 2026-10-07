@@ -10,7 +10,7 @@ export const TOOL_DEFINITIONS = [
   {
     name: "browse_page",
     description:
-      "Use this when you need the content of a live public web page. It opens the URL in a headless browser, waits for the document, and returns the title, final URL, and cleaned markdown (or links/title only). Returns extracted text, not a screenshot. Does not log in or fill forms.",
+      "Use this when you need the content of a live public web page. Static HTML is read directly. Script-built pages are opened in a browser. Files such as PDFs and images return status and type. The markdown leads with images, page data, and links, then the page text. Returns extracted text, not a screenshot. Does not log in or fill forms.",
     inputSchema: {
       type: "object",
       properties: {
@@ -58,7 +58,7 @@ export const TOOL_DEFINITIONS = [
   {
     name: "search_page",
     description:
-      "Use this when you need excerpts matching a query on a public page. It opens the URL, extracts text, and returns up to N case-insensitive snippets around the query. Returns markdown snippets.",
+      "Use this when you need excerpts matching a query on a public page. It opens the URL and searches the extracted text, including image URLs and product data. Returns up to N case-insensitive snippets around the query.",
     inputSchema: {
       type: "object",
       properties: {
